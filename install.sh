@@ -62,7 +62,7 @@ add_source_to_zshrc() {
     fi
 }
 
-# Install progans from the input file
+# Install programs from the input file
 install_packages() {
     logging INFO "Installing/checking for new packages from $1"
     local filename=$1
@@ -81,11 +81,11 @@ install_packages() {
 
             if [ -z "$inst_ver" ]; then
                 logging INFO "$pkg_name not found. Installing version $pkg_ver..."
-                sudo dpkg -i install.deb
+                sudo dpkg -i install.deb 2>/dev/null
                 sudo apt --fix-broken install -y &>/dev/null
             elif dpkg --compare-versions "$pkg_ver" gt "$inst_ver"; then
                 logging INFO "Upgrading $pkg_name from $inst_ver to $pkg_ver..."
-                sudo dpkg -i install.deb
+                sudo dpkg -i install.deb 2>/dev/null
                 sudo apt --fix-broken install -y &>/dev/null
             else
                 logging DEBUG "$pkg_name is up to date ($inst_ver). Skipping..."
@@ -149,7 +149,6 @@ replace_or_append() {
     logging DEBUG "Replacement already exists in file: $file"
   else
     if $sudo grep -qE "^$target$" "$file"; then
-        # Perform in-place replacement with sed (consider using a temporary file for safety)
         $sudo sed -i "/^$target/s//$replacement/" "$file"
         logging INFO "Changed line in file: $file"
     else
@@ -178,7 +177,7 @@ check_git_status() {
     fi
 
     # Try to fetch, but timeout after 3 seconds if offline
-    if ! timeout 3s git fetch &> /dev/null; then
+    if ! timeout 10s git fetch &> /dev/null; then
         logging DEBUG "Could not fetch updates (offline or timeout). Skipping version check."
         return
     fi
@@ -209,6 +208,14 @@ check_git_status() {
     fi
 }
 
+add_to_group (){
+    local group_name=$1
+    if ! groups $USER | grep -q "$group_name"; then
+        sudo gpasswd -a $USER $group_name
+        reboot=true
+    fi
+}
+
 check_git_status
 
 if [[ -n "$SUDO_USER" || -n "$SUDO_UID" ]]; then
@@ -218,8 +225,6 @@ if [[ -n "$SUDO_USER" || -n "$SUDO_UID" ]]; then
 fi
 
 # Update apt database
-sudo apt update
-sudo apt upgrade -y
 
 
 if [ -z "$(git config user.email)" ]; then
@@ -232,21 +237,12 @@ if [ -z "$(git config user.name)" ]; then
     git config --global user.name "$git_name"
 fi
 
-
-# Add user to uucp group to allow access to serial ports
-# TODO: this should be a function now 
-if ! groups $USER | grep &>/dev/null '\buucp\b'; then
-    sudo gpasswd -a $USER uucp
-    reboot=true
-fi
-
-# TODO: install docker
-# Add Docker's official GPG key:
 sudo install -m 0755 -d /etc/apt/keyrings
-if [[ -f /etc/apt/keyrings/docker.asc ]]; then
-    sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-    sudo chmod a+r /etc/apt/keyrings/docker.asc
-sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
+
+sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
 Types: deb
 URIs: https://download.docker.com/linux/debian
 Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
@@ -254,18 +250,13 @@ Components: stable
 Signed-By: /etc/apt/keyrings/docker.asc
 EOF
 
-fi
 
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/oracle-virtualbox-2016.gpg] https://download.virtualbox.org/virtualbox/debian $(. /etc/os-release && echo "$VERSION_CODENAME") contrib" | sudo tee /etc/apt/sources.list.d/virtualbox.list > /dev/null
+wget -O- https://www.virtualbox.org/download/oracle_vbox_2016.asc > /dev/null | sudo gpg --yes --output /usr/share/keyrings/oracle-virtualbox-2016.gpg --dearmor > /dev/null
 
-wget -O- https://www.virtualbox.org | sudo gpg --dearmor --yes --output /usr/share/keyrings/oracle-vbox.gpg
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/oracle-vbox.gpg] https://download.virtualbox.org $(lsb_release -cs) contrib" | sudo tee /etc/apt/sources.list.d/virtualbox.list
-
-sudo usermod -aG vboxusers $USER
-
-
-
-
-sudo apt update
+sudo dpkg --configure -a
+sudo apt update > /dev/null
+sudo apt upgrade -y
 install_packages "packages"
 install_code_packages "code_packages"
 
@@ -355,9 +346,6 @@ file_to_source="$zsh_config_path/.work"
 if [[ $zsh_work == "y" ]] && ! grep -q "$file_to_source" ~/.zshrc; then
     add_source_to_zshrc "$file_to_source"
 fi
-
-# Update locate database
-sudo updatedb
 
 # Cleanup unused packages 
 

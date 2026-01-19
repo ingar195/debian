@@ -10,14 +10,13 @@ dmidecode
 flameshot
 kicad
 meld
-mlocate
 numlockx
 qbittorrent
 rclone
 rsync
 screen
 unzip
-virtualbox
+virtualbox-7.2
 wget
 wireguard-tools
 zip
