@@ -67,22 +67,46 @@ install_packages() {
     logging INFO "Installing/checking for new packages from $1"
     local filename=$1
     while IFS= read -r package || [[ -n "$package" ]]; do
+        
+        if echo "$package" | grep -q "http"; then
+            curl -L -o install.deb "$package" &>/dev/null
+            
+            local pkg_name
+            local pkg_ver
+            local inst_ver
+            
+            pkg_name=$(dpkg-deb -f install.deb Package)
+            pkg_ver=$(dpkg-deb -f install.deb Version)
+            inst_ver=$(dpkg-query -W -f='${Version}' "$pkg_name" 2>/dev/null)
 
-        if [[ cat "$package" | grep "http" ]]; do
-            curl -L -o install.deb "$package"
-            sudo dpkg -i install.deb
-            sudo apt install -f
+            if [ -z "$inst_ver" ]; then
+                logging INFO "$pkg_name not found. Installing version $pkg_ver..."
+                sudo dpkg -i install.deb
+                sudo apt --fix-broken install -y &>/dev/null
+            elif dpkg --compare-versions "$pkg_ver" gt "$inst_ver"; then
+                logging INFO "Upgrading $pkg_name from $inst_ver to $pkg_ver..."
+                sudo dpkg -i install.deb
+                sudo apt --fix-broken install -y &>/dev/null
+            else
+                logging DEBUG "$pkg_name is up to date ($inst_ver). Skipping..."
+            fi
             rm install.deb
         else
-            if apt list --installed "$package" &> /dev/null; then
+            if apt list --installed "$package" 2>/dev/null | grep -q "installed"; then
                 logging DEBUG "$package is already installed"
-                continue
             else
                 logging INFO "$package is not installed, installing now"
-                sudo apt install "$package" -y "$package" &>/dev/null
+                sudo apt install -y "$package" &>/dev/null
             fi
         fi
-        if ! apt list --installed "$package" &> /dev/null; then
+
+        local check_name
+        if echo "$package" | grep -q "http"; then
+             check_name="$pkg_name"
+        else
+             check_name="$package"
+        fi
+        if ! dpkg -s "$check_name" &> /dev/null; then
             logging ERROR "Failed to install $package"
         fi
     done < "$filename"
@@ -93,7 +117,8 @@ install_code_packages() {
     local filename=$1
     local installed_extensions=$(code --list-extensions)
     while IFS= read -r package || [[ -n "$package" ]]; do
-        if echo "$installed_extensions" | grep -qE "^$package$" &> /dev/null; then
+        logging DEBUG Installing "$package"
+        if echo "$installed_extensions" | grep -E "^$package" &> /dev/null; then
             logging DEBUG "$package is already installed"
             continue
         fi
@@ -107,16 +132,15 @@ replace_or_append() {
   local replacement="$3" # Replacement line
   logging DEBUG "Replacing or appending $target with $replacement in $file"
 
-  if [ -z $4 ]; then
+  if [ -z "$4" ]; then
     local sudo=""
   else
     local sudo="sudo"
   fi
 
-  # This gives false positive on files that curen user don't not have read access to wazuh client ins on example
-  # Command to be run a s sudo 
-  if [ ! -f $file ]; then
-    $sudo touch $file
+
+  if [ ! -f "$file" ]; then
+    $sudo touch "$file"
     logging INFO "Created file: $file"
   fi
 
@@ -148,48 +172,44 @@ install_i3() {
     fi
 }
 
-UPSTREAM=$(git rev-parse --abbrev-ref '@{u}')
-if [ -z "$UPSTREAM" ]; then
-    logging ERROR "No upstream branch set. Please set the upstream branch and try again."
-    exit 1
-fi
+check_git_status() {
+    if [[ -n $(git status --porcelain) ]]; then
+        logging WARNING "You have unstaged changes in your working directory"
+    fi
 
-git fetch &> /dev/null
+    # Try to fetch, but timeout after 3 seconds if offline
+    if ! timeout 3s git fetch &> /dev/null; then
+        logging DEBUG "Could not fetch updates (offline or timeout). Skipping version check."
+        return
+    fi
 
-# Get the upstream branch
-UPSTREAM=$(git rev-parse --abbrev-ref '@{u}')
-if [ -z "$UPSTREAM" ]; then
-    logging ERROR "No upstream branch set. Please set the upstream branch and try again."
-    exit 1
-fi
+    local UPSTREAM
+    UPSTREAM=$(git rev-parse --abbrev-ref '@{u}' 2>/dev/null)
+    
+    if [ -z "$UPSTREAM" ]; then
+        logging ERROR "No upstream branch set"
+        return
+    fi
 
-LOCAL=$(git rev-parse @)
-REMOTE=$(git rev-parse "$UPSTREAM")
-BASE=$(git merge-base @ "$UPSTREAM")
+    local BEHIND
+    local AHEAD
+    
+    # Count how many commits we are behind or ahead
+    BEHIND=$(git rev-list --count HEAD.."$UPSTREAM" 2>/dev/null)
+    AHEAD=$(git rev-list --count "$UPSTREAM"..HEAD 2>/dev/null)
 
-logging DEBUG "Local: $LOCAL"
-logging DEBUG "Remote: $REMOTE"
-logging DEBUG "Base: $BASE"
+    if [ "$BEHIND" -gt 0 ] && [ "$AHEAD" -gt 0 ]; then
+        logging ERROR "The git repository has diverged (Ahead: $AHEAD, Behind: $BEHIND)"
+    elif [ "$BEHIND" -gt 0 ]; then
+        logging WARNING "New version available ($BEHIND commits behind). You should pull this repo."
+    elif [ "$AHEAD" -gt 0 ]; then
+        logging INFO "You have local commits ($AHEAD) that are not pushed."
+    else
+        logging INFO "Install script is Up-to-date"
+    fi
+}
 
-unstaged_changes=$(git status --porcelain)
-if [ -n "$unstaged_changes" ]; then
-    logging WARNING "You have unstaged changes in your working directory."
-    sleep 10
-fi
-
-if [ "$LOCAL" = "$REMOTE" ]; then
-    logging INFO "Install script is Up-to-date"
-elif [ "$LOCAL" = "$BASE" ]; then
-    logging WARNING "This is not the latest version of the install script. You should pull this repo..."
-    sleep 10
-elif [ "$REMOTE" = "$BASE" ]; then
-    logging WARNING "You have local changes to the install script. Please push after testing..."
-    sleep 10
-else
-    logging ERROR "The git repository for the install script has diverged. Please investigate..."
-    sleep 30
-fi
-
+check_git_status
 
 if [[ -n "$SUDO_USER" || -n "$SUDO_UID" ]]; then
     logging ERROR "You are not allowed to run this script as sudo, exiting in 5 sec"
@@ -198,11 +218,11 @@ if [[ -n "$SUDO_USER" || -n "$SUDO_UID" ]]; then
 fi
 
 # Update apt database
-sudo apt udpate
+sudo apt update
 sudo apt upgrade -y
 
 
-if [ ! $(git config user.email)  ]; then
+if [ -z "$(git config user.email)" ]; then
     read -p "Type your git email:  " git_email
     git config --global user.email "$git_email"
     
@@ -220,6 +240,32 @@ if ! groups $USER | grep &>/dev/null '\buucp\b'; then
     reboot=true
 fi
 
+# TODO: install docker
+# Add Docker's official GPG key:
+sudo install -m 0755 -d /etc/apt/keyrings
+if [[ -f /etc/apt/keyrings/docker.asc ]]; then
+    sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+    sudo chmod a+r /etc/apt/keyrings/docker.asc
+sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/debian
+Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+Components: stable
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+fi
+
+
+wget -O- https://www.virtualbox.org | sudo gpg --dearmor --yes --output /usr/share/keyrings/oracle-vbox.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/oracle-vbox.gpg] https://download.virtualbox.org $(lsb_release -cs) contrib" | sudo tee /etc/apt/sources.list.d/virtualbox.list
+
+sudo usermod -aG vboxusers $USER
+
+
+
+
+sudo apt update
 install_packages "packages"
 install_code_packages "code_packages"
 
@@ -235,28 +281,14 @@ then
     logging WARNING "Did not find any SSH key, created a new one"
 fi
 
-# TODO: install docker
-# Add Docker's official GPG key:
-sudo install -m 0755 -d /etc/apt/keyrings
-if [[ -f /etc/apt/keyrings/docker.asc ]]; do
-    sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-    sudo chmod a+r /etc/apt/keyrings/docker.asc
-sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
-Types: deb
-URIs: https://download.docker.com/linux/debian
-Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
-Components: stable
-Signed-By: /etc/apt/keyrings/docker.asc
-EOF
 
-fi
 
 # Setting TERM to xterm
 # replace_or_append $HOME/.zshrc "export TERM=xterm" "export TERM=xterm"
 
 # user defaults
 
-elif [ $USER = user ] || [ $USER = ingar ]; then
+if [ "$USER" = "user" ] || [ "$USER" = "ingar" ]; then
 
     # Create directory's
     mkdir -p $HOME/workspace/work &> /dev/null
@@ -320,7 +352,7 @@ add_source_to_zshrc "$zsh_config_path/.functions"
 
 file_to_source="$zsh_config_path/.work"
 
-if [[ $zsh_work == "y" && ! $(grep -q "$file_to_source" ~/.zshrc) ]]; then
+if [[ $zsh_work == "y" ]] && ! grep -q "$file_to_source" ~/.zshrc; then
     add_source_to_zshrc "$file_to_source"
 fi
 
@@ -349,5 +381,3 @@ if [ "$reboot" = true ]; then
     echo "Please reboot your PC"
     echo ----------------------
 fi
-
-
