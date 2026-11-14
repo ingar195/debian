@@ -8,6 +8,7 @@ if [ -z "$BASH_VERSION" ]; then
     exec bash "$0" "$@"
 fi
 
+cd "$(dirname "$0")" || exit 1   # lists and helper files are read from this folder
 source functions.sh
 
 set -uo pipefail
@@ -72,14 +73,28 @@ fi
 # later can't find the keyring file at all.
 sudo install -m 0755 -d /usr/share/keyrings
 
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/oracle-virtualbox-2016.gpg] https://download.virtualbox.org/virtualbox/debian $(. /etc/os-release && echo "$VERSION_CODENAME") contrib" | sudo tee /etc/apt/sources.list.d/virtualbox.list > /dev/null
 if ! command -v gpg &> /dev/null; then
     logging INFO "gpg not found, installing gnupg"
     sudo apt-get install -y gnupg || logging ERROR "Failed to install gnupg, VirtualBox key import will fail"
 fi
 vbox_key_err=$( { wget -O- https://www.virtualbox.org/download/oracle_vbox_2016.asc | sudo gpg --yes --output /usr/share/keyrings/oracle-virtualbox-2016.gpg --dearmor; } 2>&1 )
 if [ ! -s /usr/share/keyrings/oracle-virtualbox-2016.gpg ]; then
-    logging ERROR "Failed to fetch/import VirtualBox gpg key, VirtualBox repo will not work: $vbox_key_err"
+    logging ERROR "Failed to fetch/import VirtualBox gpg key, VirtualBox repo will not be configured: $vbox_key_err"
+else
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/oracle-virtualbox-2016.gpg] https://download.virtualbox.org/virtualbox/debian $(. /etc/os-release && echo "$VERSION_CODENAME") contrib" | sudo tee /etc/apt/sources.list.d/virtualbox.list > /dev/null
+fi
+
+# Tailscale and Claude Desktop are in `packages`, so their apt repos must exist on a fresh PC too.
+codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+if sudo curl -fsSL "https://pkgs.tailscale.com/stable/debian/$codename.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg; then
+    echo "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/debian $codename main" | sudo tee /etc/apt/sources.list.d/tailscale.list > /dev/null
+else
+    logging ERROR "Failed to download Tailscale gpg key, Tailscale repo will not be configured"
+fi
+if sudo curl -fsSL https://downloads.claude.ai/claude-desktop/key.asc -o /usr/share/keyrings/claude-desktop-archive-keyring.asc; then
+    echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/claude-desktop-archive-keyring.asc] https://downloads.claude.ai/claude-desktop/apt/stable stable main" | sudo tee /etc/apt/sources.list.d/claude-desktop.list > /dev/null
+else
+    logging ERROR "Failed to download Claude Desktop gpg key, Claude Desktop repo will not be configured"
 fi
 
 sudo dpkg --configure -a
@@ -98,8 +113,8 @@ fi
 
 # Generate ssh key
 if ! ls "$HOME"/.ssh/id_*.pub &> /dev/null; then
-    ssh-keygen -m PEM -N '' -f "$HOME/.ssh/id_rsa"
-    logging WARNING "Did not find any SSH key, created a new one"
+    ssh-keygen -t ed25519 -N '' -f "$HOME/.ssh/id_ed25519"
+    logging WARNING "Did not find any SSH key, created a new one. Add this public key to GitHub: $(cat "$HOME/.ssh/id_ed25519.pub")"
 fi
 
 # Setting TERM to xterm
@@ -124,6 +139,7 @@ dotfiles() { /usr/bin/git --git-dir="$HOME/.dotfiles/" --work-tree="$HOME" "$@";
 if [[ ! -d "$HOME/.dotfiles/" ]]; then
     logging INFO "Did not find .dotfiles, cloning from $git_url"
     if git clone --bare "$git_url" "$HOME/.dotfiles"; then
+        backup_dotfile_conflicts
         if dotfiles checkout -f; then
             logging INFO "Dotfiles successfully checked out."
         else
@@ -147,6 +163,7 @@ if [[ -d "$HOME/.dotfiles/" ]]; then
     dotfiles config "branch.$dotfiles_branch.remote" origin
     dotfiles config "branch.$dotfiles_branch.merge" "refs/heads/$dotfiles_branch"
     dotfiles config pull.rebase true
+    dotfiles config rebase.autoStash true   # apps (e.g. Variety) rewrite tracked files; a rebase refuses to start with local changes
 fi
 
 # The ingar195/.dotfiles repo ships an i3/polybar/variety desktop setup.
@@ -155,32 +172,33 @@ if [ "$known_user" = true ]; then
     install_i3
 fi
 
-# System configuration (ported from the Arch installer)
-sudo timedatectl set-timezone Europe/Oslo
-add_to_group video     # brightnessctl without root
-add_to_group dialout   # serial ports (was uucp on Arch)
+# System configuration (ported from the Arch installer). Known accounts only,
+# and written once, so later hand-edits are not overwritten on re-runs.
+if [ "$known_user" = true ]; then
+    [ "$(timedatectl show -p Timezone --value)" = Europe/Oslo ] || sudo timedatectl set-timezone Europe/Oslo
+    add_to_group video     # brightnessctl without root
+    add_to_group dialout   # serial ports (was uucp on Arch)
 
-# Power saving. Drop-in files, so no sed on the main config files.
-# Locking on suspend is handled by xss-lock in the i3 config.
-sudo install -d /etc/systemd/logind.conf.d /etc/systemd/system.conf.d /etc/tlp.d
-printf '[Login]\nHandleLidSwitch=suspend\nIdleAction=suspend\nIdleActionSec=10min\nHoldoffTimeoutSec=5s\n' \
-    | sudo tee /etc/systemd/logind.conf.d/50-installer.conf > /dev/null
-printf '[Manager]\nDefaultTimeoutStopSec=10s\n' \
-    | sudo tee /etc/systemd/system.conf.d/50-installer.conf > /dev/null
-printf 'TLP_ENABLE=1\nCPU_SCALING_GOVERNOR_ON_BAT=powersave\nCPU_SCALING_GOVERNOR_ON_AC=performance\n' \
-    | sudo tee /etc/tlp.d/50-installer.conf > /dev/null
+    # Power saving. Drop-in files, so no sed on the main config files.
+    # Locking on suspend is handled by xss-lock in the i3 config.
+    write_once /etc/systemd/logind.conf.d/50-installer.conf '[Login]\nHandleLidSwitch=suspend\nIdleAction=suspend\nIdleActionSec=10min\nHoldoffTimeoutSec=5s\n'
+    write_once /etc/systemd/system.conf.d/50-installer.conf '[Manager]\nDefaultTimeoutStopSec=10s\n'
+    write_once /etc/tlp.d/50-installer.conf 'TLP_ENABLE=1\nCPU_SCALING_GOVERNOR_ON_BAT=powersave\nCPU_SCALING_GOVERNOR_ON_AC=performance\n'
 
-for svc in NetworkManager bluetooth tlp acpid cups docker; do
-    if systemctl cat "$svc.service" &> /dev/null; then
-        sudo systemctl enable --now "$svc.service" &> /dev/null || logging ERROR "Failed to enable $svc"
+    for svc in NetworkManager bluetooth tlp acpid cups docker; do
+        if systemctl cat "$svc.service" &> /dev/null; then
+            sudo systemctl enable --now "$svc.service" &> /dev/null || logging ERROR "Failed to enable $svc"
+        fi
+    done
+
+    # Dark theme and scroll direction: first run only, so a later change in GNOME sticks
+    desktop_marker="$HOME/.config/.installer-desktop-defaults"
+    if command -v gsettings &> /dev/null && [ ! -f "$desktop_marker" ]; then
+        gsettings set org.gnome.desktop.interface color-scheme prefer-dark &> /dev/null
+        gsettings set org.gnome.desktop.interface gtk-theme Adwaita-dark &> /dev/null
+        gsettings set org.gnome.desktop.peripherals.touchpad natural-scroll false &> /dev/null \
+            && touch "$desktop_marker"   # no desktop session (ssh/tty): gsettings fails, so retry next run
     fi
-done
-
-# Dark theme
-if command -v gsettings &> /dev/null; then
-    gsettings set org.gnome.desktop.interface color-scheme prefer-dark &> /dev/null
-    gsettings set org.gnome.desktop.interface gtk-theme Adwaita-dark &> /dev/null
-    gsettings set org.gnome.desktop.peripherals.touchpad natural-scroll false &> /dev/null
 fi
 
 # Symbols Nerd Font (polybar icons) -- not packaged in Debian
@@ -225,17 +243,9 @@ mkdir -p "$zsh_config_path"
 cp .aliases "$zsh_config_path/"
 cp .functions "$zsh_config_path/"
 
-sed -i "s|script_path|$PWD|g" "$HOME/.config/zsh/.functions"
-
 # Add sources to .zshrc if not already there
 add_source_to_zshrc "$zsh_config_path/.aliases"
 add_source_to_zshrc "$zsh_config_path/.functions"
-
-file_to_source="$zsh_config_path/.work"
-
-if [[ "${zsh_work:-}" == "y" ]] && ! grep -q "$file_to_source" "$HOME/.zshrc"; then
-    add_source_to_zshrc "$file_to_source"
-fi
 
 # Converts https to ssh
 if [ "$skip_convert" = false ]; then

@@ -2,6 +2,7 @@
 # ingar195/.dotfiles checks out into ~/.config. Installed by install_i3(),
 # which install.sh calls automatically for the known "ingar"/"user" account.
 #
+# Also needed by the i3 config but installed from `packages`: numlockx, flameshot, unzip, network-manager-applet.
 # Same format as `packages`: one apt package name or https .deb URL per
 # line, blank lines and lines starting with # are ignored.
 
@@ -24,8 +25,6 @@ rofi
 
 # exec'd directly from .config/i3/config
 autorandr
-numlockx
-network-manager-gnome
 variety
 i3lock
 x11-xserver-utils
@@ -35,7 +34,6 @@ brightnessctl
 nautilus
 scrot
 xclip
-flameshot
 libnotify-bin
 
 # Used by .config/polybar/power.sh and spotify.py
@@ -56,7 +54,6 @@ arc-theme
 numix-gtk-theme
 fonts-urw-base35
 fontconfig
-unzip
 
 # alacritty is available as a backports/testing apt package on some Debian
 # releases; if `apt-get install alacritty` fails on yours, install via

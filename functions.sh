@@ -76,9 +76,14 @@ add_source_to_zshrc() {
     fi
 }
 
+is_installed() {
+    dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "install ok installed"
+}
+
 # Install programs from the input file.
-# Lines may be a plain apt package name, a direct https URL to a .deb file,
-# blank, or a comment starting with #.
+# A line is an apt package name, a direct https URL to a .deb file, or
+# "name https://...deb" (when the vendor adds its own apt repo, the name lets us
+# skip the big download once it is installed). Blank lines and # comments are ignored.
 install_packages() {
     local filename=$1
 
@@ -93,14 +98,23 @@ install_packages() {
         # Skip blank lines and comments
         [[ -z "$package" || "$package" == \#* ]] && continue
 
-        if echo "$package" | grep -q "http"; then
-            local pkg_name
-            local pkg_ver
-            local inst_ver
-            local err_output
+        local url="" hint="" pkg_name="" pkg_ver inst_ver err_output
+        if [[ $package == http://* || $package == https://* ]]; then
+            url=$package
+        elif [[ $package == *" http://"* || $package == *" https://"* ]]; then
+            hint=${package%% *}
+            url=${package#* }
+        fi
 
-            if ! err_output=$(curl -fL -o install.deb "$package" 2>&1); then
-                logging ERROR "Failed to download $package: $err_output"
+        if [[ -n $url ]]; then
+            if [[ -n $hint ]] && is_installed "$hint"; then
+                deb_packages+=("$hint")
+                logging DEBUG "$hint is already installed, apt keeps it updated. Skipping download..."
+                continue
+            fi
+
+            if ! err_output=$(curl -fL -o install.deb "$url" 2>&1); then
+                logging ERROR "Failed to download $url: $err_output"
                 continue
             fi
 
@@ -111,49 +125,40 @@ install_packages() {
 
             if [ -z "$inst_ver" ]; then
                 logging INFO "$pkg_name not found. Installing version $pkg_ver..."
-                if err_output=$(sudo dpkg -i install.deb 2>&1); then
+                if err_output=$(sudo DEBIAN_FRONTEND=noninteractive dpkg -i install.deb 2>&1); then
                     newly_installed+=("$pkg_name")
                 else
                     logging WARNING "dpkg reported issues installing $pkg_name, attempting to fix dependencies: $err_output"
                 fi
-                if ! err_output=$(sudo apt-get --fix-broken install -y 2>&1); then
+                if ! err_output=$(sudo DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y 2>&1); then
                     logging ERROR "Failed to fix dependencies for $pkg_name: $err_output"
                 fi
             elif dpkg --compare-versions "$pkg_ver" gt "$inst_ver"; then
                 logging INFO "Upgrading $pkg_name from $inst_ver to $pkg_ver..."
-                if err_output=$(sudo dpkg -i install.deb 2>&1); then
+                if err_output=$(sudo DEBIAN_FRONTEND=noninteractive dpkg -i install.deb 2>&1); then
                     newly_installed+=("$pkg_name (upgraded)")
                 else
                     logging ERROR "Failed to upgrade $pkg_name: $err_output"
                 fi
-                sudo apt-get --fix-broken install -y &>/dev/null
+                sudo DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y &>/dev/null
             else
                 logging DEBUG "$pkg_name is up to date ($inst_ver). Skipping..."
             fi
             rm -f install.deb
+        elif is_installed "$package"; then
+            logging DEBUG "$package is already installed"
         else
-            if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"; then
-                logging DEBUG "$package is already installed"
+            logging INFO "$package is not installed, installing now"
+            # noninteractive: output is captured, so a debconf question would hang with no visible prompt
+            if err_output=$(sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$package" 2>&1); then
+                newly_installed+=("$package")
             else
-                logging INFO "$package is not installed, installing now"
-                local err_output
-                if err_output=$(sudo apt-get install -y "$package" 2>&1); then
-                    newly_installed+=("$package")
-                else
-                    logging ERROR "Failed to install $package: $(echo "$err_output" | tail -n 3)"
-                fi
+                logging ERROR "Failed to install $package: $(echo "$err_output" | tail -n 3)"
             fi
         fi
 
-        local check_name
-        if echo "$package" | grep -q "http"; then
-             check_name="$pkg_name"
-        else
-             check_name="$package"
-        fi
-
-        # This check is fine, dpkg -s is stable
-        if [ -n "$check_name" ] && ! dpkg -s "$check_name" &> /dev/null; then
+        local check_name=${pkg_name:-$package}
+        if ! dpkg -s "$check_name" &> /dev/null; then
             logging ERROR "Failed to install $package"
         fi
     done < "$filename"
@@ -192,44 +197,32 @@ install_code_packages() {
     done < "$filename"
 }
 
-replace_or_append() {
-  local file="$1"  # Target file
-  local target="$2" # Line to replace (target string)
-  local replacement="$3" # Replacement line
-  logging DEBUG "Replacing or appending $target with $replacement in $file"
-
-  local sudo=""
-  if [ -n "${4:-}" ]; then
-    sudo="sudo"
-  fi
-
-  if [ ! -f "$file" ]; then
-    $sudo touch "$file"
-    logging INFO "Created file: $file"
-  fi
-
-  # Use grep to check if target exists (avoids unnecessary sed invocation)
-  if $sudo grep -qE "^$replacement$" "$file"; then
-    logging DEBUG "Replacement already exists in file: $file"
-  else
-    if $sudo grep -qE "^$target$" "$file"; then
-        $sudo sed -i "/^$target/s//$replacement/" "$file"
-        logging INFO "Changed line in file: $file"
-    else
-        # Append replacement if target not found
-        echo "$replacement" | $sudo tee -a "$file" > /dev/null
-        logging INFO "Added line in file: $file"
-    fi
-  fi
-}
-
 install_i3() {
     install_packages "i3_packages"
+}
 
-    if [ ! -f "$HOME/.dotfiles/config" ]; then
-        rm -f "$HOME/.config/i3/config"
-        mkdir -p "$HOME/.config/polybar"
+# checkout -f overwrites, so first copy every existing file the dotfiles repo tracks into a backup folder
+backup_dotfile_conflicts() {
+    local backup f
+    backup="$HOME/.dotfiles-backup-$(date +%Y%m%d-%H%M%S)"
+    while IFS= read -r f; do
+        if [[ -e "$HOME/$f" ]]; then
+            mkdir -p "$backup/$(dirname "$f")" && cp -a "$HOME/$f" "$backup/$f"
+        fi
+    done < <(dotfiles ls-tree -r --name-only HEAD)
+    if [[ -d $backup ]]; then
+        logging WARNING "Existing files backed up to $backup"
     fi
+    return 0
+}
+
+# write_once FILE TEXT: create FILE as root only if it is missing, so later hand-edits survive re-runs
+# shortcut: never rewrites, so changed values in the script do not reach PCs that already have the file; delete the file to re-apply
+write_once() {
+    [ -f "$1" ] && return
+    sudo install -d "$(dirname "$1")"
+    printf '%b' "$2" | sudo tee "$1" > /dev/null
+    reboot=true
 }
 
 check_git_status() {
@@ -277,9 +270,6 @@ add_to_group() {
     fi
 }
 
-# Compares apt packages installed manually on this system against the ones
-# tracked in our "packages" manifest, and prints (one per line) the ones we
-# didn't install and don't know about. Used for the end-of-run summary.
 # Manually installed apt packages that none of the given list files name.
 # System packages (libs, firmware, kernel, task-*, anything above "optional" priority) are ignored.
 # shortcut: heuristics, not an exact base-system list; tune the filters if it gets noisy.
@@ -287,7 +277,7 @@ compute_unlisted_packages() {
     command -v apt-mark &> /dev/null || return
 
     local listed
-    listed=$( { for f in "$@"; do [ -f "$f" ] && grep -v '^\s*#' "$f" | grep -v 'http' | grep -v '^\s*$'; done; printf '%s\n' "${deb_packages[@]}"; } | sort -u)
+    listed=$( { for f in "$@"; do [ -f "$f" ] && grep -v '^\s*#' "$f" | grep -v '://' | grep -v '^\s*$'; done; printf '%s\n' "${deb_packages[@]}"; } | sort -u)
 
     comm -23 <(apt-mark showmanual | sort -u) <(echo "$listed") \
         | grep -vE '^(lib|firmware-|linux-|task-|grub|gcc-)' \

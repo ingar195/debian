@@ -26,12 +26,13 @@ bash install.sh [-s -d -c]
 ## Features
 * Updates the PC (`apt update && apt upgrade`)
 * Sets up git username and email if not already configured
-* Adds the Docker and VirtualBox apt repositories
-* Installs all packages from the `packages` file (supports both plain apt package names and direct `.deb` URLs)
+* Adds the Docker, VirtualBox, Tailscale and Claude Desktop apt repositories
+* Installs all packages from the `packages` file (plain apt package names, direct `.deb` URLs, or `name https://...deb` — with a name, the download is skipped once the package is installed, because the vendor's apt repo keeps it updated)
 * Installs VS Code extensions from `code_packages` (skipped with a warning if `code` isn't installed yet)
 * Optionally installs `sec_packages` when `-c` is passed
-* Generates an SSH key if one doesn't exist
-* Clones/updates the dotfiles bare repo, installs its i3/polybar/variety dependencies from `i3_packages` — including X11 (known accounts only) — and converts the dotfiles remote from HTTPS to SSH (unless `-s` is passed)
+* Generates an ed25519 SSH key if none exists and prints the public key to add to GitHub
+* Clones/updates the dotfiles bare repo, installs its i3/polybar/variety dependencies from `i3_packages` — including X11 (known accounts only) — and converts the dotfiles remote from HTTPS to SSH (unless `-s` is passed). Files the checkout would overwrite are first copied to `~/.dotfiles-backup-<time>`
+* For the known accounts only: sets the time zone, power-saving drop-ins and enables services. Settings files are written once (never overwritten on re-runs) and dark theme/scroll direction are set on the first run only
 * Configures zsh: sets it as the login shell, installs Oh My Zsh, sets the `agnoster` theme, deploys `.aliases`/`.functions` into `~/.config/zsh` and sources them from `.zshrc`
 * Creates standard folders (`workspace/work`, `Downloads`, `Desktop`, `Pictures`, `.config/wireguard`)
 * Reports any manually-installed apt packages that aren't tracked in `packages`
@@ -42,14 +43,13 @@ bash install.sh [-s -d -c]
 - `dotp`      — quickly commit and push all changes to files already tracked in dotfiles
 - `rs`        — `rsync` with our preferred flags
 - `cansetup`  — sets up can-bus for use with can-utils
-- `wg` / `wgd`   — connect/disconnect WireGuard using `~/.config/wireguard/wg0.conf`
+- `wgu` / `wgd`   — connect/disconnect WireGuard using `~/.config/wireguard/wg0.conf`
 - `wgh` / `wghd` — connect/disconnect WireGuard using `~/.config/wireguard/wg1.conf`
 - `lll`       — tree view
 - `py` / `python` — run Python 3
 - `cpu`       — live per-thread core clock watch
 - `ports`     — `ss -tulpn`
-- `install` / `uninstall` — thin wrappers around `apt-get install` / `apt-get remove --purge`
-- `update`    — pulls the latest version of this repo and re-runs `install.sh`
+- `pkg`        — `sudo apt-get install` (named `pkg` so it does not hide `/usr/bin/install`)
 
 ## Package/extension lists
 - `packages` — apt packages and direct `.deb` download URLs installed on every run
@@ -58,3 +58,6 @@ bash install.sh [-s -d -c]
 - `i3_packages` — packages for the i3/polybar/variety desktop setup shipped by the dotfiles repo (`install_i3`, auto-run for the `ingar`/`user` accounts)
 
 Any of these files may contain blank lines or `#` comments — both are ignored.
+
+## Checks
+`bash test.sh` runs a syntax check, `shellcheck` (installed from `packages`) and a small test of the package-list parsing. Run it before committing.
