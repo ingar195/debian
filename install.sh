@@ -138,6 +138,13 @@ else
     dotfiles pull &> /dev/null || logging ERROR "Dotfiles pull failed."
 fi
 
+# A bare clone has no upstream branch, so plain `git push`/`git pull` (the dotp alias) fail without this
+if [[ -d "$HOME/.dotfiles/" ]]; then
+    dotfiles_branch=$(dotfiles symbolic-ref --short HEAD)
+    dotfiles config "branch.$dotfiles_branch.remote" origin
+    dotfiles config "branch.$dotfiles_branch.merge" "refs/heads/$dotfiles_branch"
+fi
+
 # The ingar195/.dotfiles repo ships an i3/polybar/variety desktop setup.
 # Install the packages it needs (see i3_packages) for the known-user case.
 if [ "$known_user" = true ]; then
