@@ -1,0 +1,3 @@
+# Security tools installed when install.sh is run with -c
+# Same format as `packages`: one apt package name or https .deb URL per line,
+# blank lines and lines starting with # are ignored.
