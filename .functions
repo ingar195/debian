@@ -1,0 +1,15 @@
+# shellcheck shell=bash
+# This file is sourced into ~/.zshrc, not run standalone.
+function install() {
+    sudo apt-get install "$@"
+}
+function uninstall() {
+    sudo apt-get remove --purge "$@"
+}
+function update() {
+    local curdir=$PWD
+    cd script_path || return 1
+    git pull &> /dev/null
+    bash install.sh
+    cd "$curdir" || return 1
+}

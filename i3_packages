@@ -1,0 +1,65 @@
+# Packages needed by the i3/polybar/variety desktop setup that
+# ingar195/.dotfiles checks out into ~/.config. Installed by install_i3(),
+# which install.sh calls automatically for the known "ingar"/"user" account.
+#
+# Same format as `packages`: one apt package name or https .deb URL per
+# line, blank lines and lines starting with # are ignored.
+
+# X server. This PC already runs gdm3 as its display manager, which lists the
+# i3 session by itself, so no display manager is installed here.
+xserver-xorg
+xinit
+
+# Window manager. Debian's i3-wm supports the "gaps inner/outer" commands
+# used in .config/i3/config from i3 v4.22 onward (merged upstream from the
+# old i3-gaps fork) -- if `apt show i3-wm` on your release is older than
+# that, install the i3-gaps package instead. i3-wm registers its own
+# /usr/share/xsessions/i3.desktop, so the display manager picks it up as a session
+# choice automatically once both are installed -- no manual xsession setup.
+i3-wm
+
+# Status bar + launcher used from the i3 config
+polybar
+rofi
+
+# exec'd directly from .config/i3/config
+autorandr
+numlockx
+network-manager-gnome
+variety
+i3lock
+x11-xserver-utils
+playerctl
+pulseaudio-utils
+brightnessctl
+nautilus
+scrot
+xclip
+flameshot
+libnotify-bin
+
+# Used by .config/polybar/power.sh and spotify.py
+bc
+python3-dbus
+
+# Idle-lock + suspend-lock. xautolock was removed from Debian 13, so the
+# dotfiles i3 config uses xss-lock + `xset s` (screensaver timeout) instead.
+xss-lock
+
+# Used by the i3/polybar configs
+xinput
+psmisc
+iproute2
+picom
+papirus-icon-theme
+arc-theme
+numix-gtk-theme
+fonts-urw-base35
+fontconfig
+unzip
+
+# alacritty is available as a backports/testing apt package on some Debian
+# releases; if `apt-get install alacritty` fails on yours, install via
+# https://github.com/alacritty/alacritty/blob/master/INSTALL.md instead.
+alacritty
+feh
