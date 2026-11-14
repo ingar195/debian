@@ -62,3 +62,4 @@ unzip
 # releases; if `apt-get install alacritty` fails on yours, install via
 # https://github.com/alacritty/alacritty/blob/master/INSTALL.md instead.
 alacritty
+feh

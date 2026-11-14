@@ -46,6 +46,9 @@ if [ -z "$(git config user.name)" ]; then
     read -r -p "Type your git Full name:  " git_name
     git config --global user.name "$git_name"
 fi
+git config --global init.defaultBranch main
+# the keyboard-layout icon ibus puts in the polybar tray
+gsettings set org.freedesktop.ibus.panel show-icon-on-systray false 2>/dev/null
 
 sudo install -m 0755 -d /etc/apt/keyrings
 
@@ -143,6 +146,7 @@ if [[ -d "$HOME/.dotfiles/" ]]; then
     dotfiles_branch=$(dotfiles symbolic-ref --short HEAD)
     dotfiles config "branch.$dotfiles_branch.remote" origin
     dotfiles config "branch.$dotfiles_branch.merge" "refs/heads/$dotfiles_branch"
+    dotfiles config pull.rebase true
 fi
 
 # The ingar195/.dotfiles repo ships an i3/polybar/variety desktop setup.
@@ -244,7 +248,7 @@ else
 fi
 
 # Diff installed packages against our manifest
-unlisted_packages=$(compute_unlisted_packages "packages")
+unlisted_packages=$(compute_unlisted_packages packages i3_packages sec_packages)
 if [ -n "$unlisted_packages" ]; then
     logging WARNING "The following manually-installed packages are not tracked in the installer: $(echo "$unlisted_packages" | tr '\n' ' ')"
 fi

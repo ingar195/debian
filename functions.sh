@@ -64,6 +64,7 @@ reboot=false
 # Packages installed/upgraded this run, populated by install_packages().
 # Used for the end-of-run summary in install.sh.
 newly_installed=()
+deb_packages=()
 
 # Function to add source to .zshrc if not already there
 add_source_to_zshrc() {
@@ -104,6 +105,7 @@ install_packages() {
             fi
 
             pkg_name=$(dpkg-deb -f install.deb Package)
+            deb_packages+=("$pkg_name")
             pkg_ver=$(dpkg-deb -f install.deb Version)
             inst_ver=$(dpkg-query -W -f='${Version}' "$pkg_name" 2>/dev/null || true)
 
@@ -181,7 +183,7 @@ install_code_packages() {
     while IFS= read -r package || [[ -n "$package" ]]; do
         [[ -z "$package" || "$package" == \#* ]] && continue
 
-        if echo "$installed_extensions" | grep -E "^$package" &> /dev/null; then
+        if echo "$installed_extensions" | grep -qixF "$package"; then
             logging DEBUG "$package is already installed"
             continue
         fi
@@ -278,18 +280,17 @@ add_to_group() {
 # Compares apt packages installed manually on this system against the ones
 # tracked in our "packages" manifest, and prints (one per line) the ones we
 # didn't install and don't know about. Used for the end-of-run summary.
+# Manually installed apt packages that none of the given list files name.
+# System packages (libs, firmware, kernel, task-*, anything above "optional" priority) are ignored.
+# shortcut: heuristics, not an exact base-system list; tune the filters if it gets noisy.
 compute_unlisted_packages() {
-    local packages_file="${1:-packages}"
-
-    if ! command -v apt-mark &> /dev/null; then
-        return
-    fi
+    command -v apt-mark &> /dev/null || return
 
     local listed
-    listed=$( { [ -f "$packages_file" ] && grep -v '^#' "$packages_file" | grep -v 'http' | grep -v '^\s*$'; } | sort -u)
+    listed=$( { for f in "$@"; do [ -f "$f" ] && grep -v '^\s*#' "$f" | grep -v 'http' | grep -v '^\s*$'; done; printf '%s\n' "${deb_packages[@]}"; } | sort -u)
 
-    local manual
-    manual=$(apt-mark showmanual | sort -u)
-
-    comm -23 <(echo "$manual") <(echo "$listed")
+    comm -23 <(apt-mark showmanual | sort -u) <(echo "$listed") \
+        | grep -vE '^(lib|firmware-|linux-|task-|grub|gcc-)' \
+        | xargs -r dpkg-query -W -f='${Package} ${Priority} ${Section}\n' 2>/dev/null \
+        | awk '($2=="optional"||$2=="extra") && $3!~/^(libs|libdevel|kernel|perl)/ {print $1}'
 }
